@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from .execute import ExecutionReport, PlanExecutor, ToolRegistry
 from .memory import Episode, EpisodicMemory

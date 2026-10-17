@@ -1,121 +1,201 @@
 # Jagadish-deep-agents
 
-Deep agent patterns: **plan-and-execute with mid-run replanning** and
-**long-term episodic memory**. A study of the two capabilities that
-separate brittle linear agents from agents that recover and learn.
+[![ci](https://github.com/jagadishmazure-jpg/Jagadish-deep-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/jagadishmazure-jpg/Jagadish-deep-agents/actions/workflows/ci.yml)
+[![codeql](https://github.com/jagadishmazure-jpg/Jagadish-deep-agents/actions/workflows/codeql.yml/badge.svg)](https://github.com/jagadishmazure-jpg/Jagadish-deep-agents/actions/workflows/codeql.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-## The problem
+**Plan-and-execute agents that recover mid-run and learn across runs: an inspectable plan, four bounded replanning strategies, and episodic memory that changes the next plan. Deterministic and offline.**
 
-Most agent loops are linear: prompt → act → act → answer. The first
-tool error kills the run, and nothing learned in one run carries over
-to the next. In production that means:
+> Personal learning and portfolio project. Everything runs offline on synthetic,
+> fictional data with no API keys. Nothing is deployed. Numbers in this README
+> come from real runs and are re-checked by CI (`scripts/render_docs.py --check`).
 
-- a transient search outage fails an entire research task instead of
-  triggering a retry or a fallback source, and
-- every run re-discovers the same workarounds (which source is
-  reliable, which query shapes work) from scratch.
+## Recruiter summary
 
-This repo implements the two classic answers, deterministically:
+- Covers the two things that separate fragile agent loops from robust ones: recovery from tool failure and memory across runs.
+- Real run: the primary search fails twice, the agent retries then substitutes a fallback tool and succeeds; on the next run memory swaps the tool up front and no replanning is needed. With both tools down it aborts cleanly.
+- Deterministic offline tests; CI with lint, CodeQL, gitleaks and documented-output drift checks.
 
-1. **Plan-and-execute with replanning.** The goal is decomposed into an
-   inspectable plan *before* any tool runs. When a step fails, a
-   replanner recovers mid-run: retry with simplified args → substitute
-   an alternative tool → skip a non-critical step (plan marked
-   degraded) → abort with partial results. Bounded by a replan budget.
-2. **Episodic memory.** Each run records an episode (task, plan,
-   outcome, lessons) to a JSONL store. Future runs recall relevant
-   episodes by keyword overlap and apply their lessons — e.g. prefer
-   the fallback search tool after learning the primary one is flaky.
+## Purpose
+
+A linear agent loop fails on the first tool error and forgets everything
+between runs. This repo builds the plan before acting, recovers from failures
+with a bounded set of strategies, and records lessons that shape the next plan.
+Tools are deterministic fakes with failure injection so every path is testable.
+Notes: [knowledge/](knowledge/README.md), [docs/memory-design.md](docs/memory-design.md).
 
 ## Architecture
 
-```
-goal
- │
- ▼
-┌──────────────┐   suggest_from_memory()   ┌─────────────────┐
-│  DeepAgent   │ ─────────────────────────▶│ EpisodicMemory  │
-└──────┬───────┘   "prefer X over Y"        │ record/recall/  │
-       │           lessons adjust plan      │ distill → JSONL │
-       ▼                                    └─────────────────┘
-┌──────────────┐  decompose() — rule-based, inspectable
-│     Plan     │  steps: id, description, tool, args, status
-└──────┬───────┘
-       ▼
-┌──────────────┐   per-step results, $sN.output refs
-│ PlanExecutor │ ──▶ ToolRegistry (fake tools, failure injection)
-└──────┬───────┘
-       │ on failure
-       ▼
-┌──────────────┐  retry_modified → substitute_tool
-│   replan()   │  → skip (degraded) → abort (partial)
-└──────────────┘  every decision logged with a reason
+```mermaid
+flowchart TB
+    G["goal"] --> M["EpisodicMemory<br/>suggest_from_memory"]
+    M -->|prefer X over Y| P["decompose()<br/>inspectable Plan"]
+    G --> P
+    P --> E["PlanExecutor<br/>ToolRegistry"]
+    E -->|step failed| R["replan()<br/>retry, substitute, skip, abort"]
+    R --> E
+    E --> O["outcome + replan log"]
+    O -->|lessons| M
 ```
 
-## Example trace
+## How it works
 
-Goal: `research EV pricing`, with the primary search tool injected to
-fail twice:
+1. `DeepAgent.run(goal)` asks memory for lessons such as "prefer fallback_search over web_search".
+2. `decompose()` builds a plan from rule templates; steps reference earlier outputs as `$sN.output`.
+3. Memory lessons rewrite matching pending steps before anything runs.
+4. `PlanExecutor` runs each step. On failure `replan()` picks, in order:
+   retry with simplified args, substitute an alternative tool, skip a
+   non-critical step (plan marked degraded), or abort with partial results.
+   A replan budget bounds it, and each decision is logged with a reason.
+5. The run is stored as an episode (task, plan, outcome, lessons) in JSONL.
 
-```
-plan:  s1 web_search("EV pricing") → s2 summarizer($s1) →
-       s3 web_search("EV pricing alternatives") → s4 summarizer($s3)
-
-s1 attempt 1: web_search failed (injected failure)
-replan #1: retry_modified — "retrying web_search with simplified args"
-s1 attempt 2: web_search failed (injected failure)
-replan #2: substitute_tool — "substituting fallback_search"
-s1 attempt 3: fallback_search → "Cached results for 'EV pricing'…" ✓
-s2, s3, s4 succeed → outcome: success (plan degraded)
-
-episode recorded: "prefer fallback_search over web_search for
-'research EV pricing'"
-
-second run, "research EV pricing trends":
-memory hit → plan built with fallback_search from the start
-```
-
-## Quickstart
-
-```bash
-pip install -e .
-python -m pytest  # 27 tests
-```
+## Real code and output
 
 ```python
-from deepagents import DeepAgent, EpisodicMemory
+"""Run 1: primary search fails twice and the agent recovers. Run 2: memory applies the lesson."""
+import tempfile
+from pathlib import Path
 
-agent = DeepAgent(memory=EpisodicMemory("memory.jsonl"))
-trace = agent.run("research EV pricing")
-print(trace.outcome)            # success | partial | failed
-print(trace.memory_hits)        # lessons applied from past runs
-print(trace.plan.replan_log)    # every mid-run recovery decision
+from deepagents import DeepAgent, EpisodicMemory
+from deepagents.execute import ToolRegistry
+
+with tempfile.TemporaryDirectory() as tmp:
+    memory = EpisodicMemory(str(Path(tmp) / "memory.jsonl"))
+
+    registry = ToolRegistry()
+    registry.fail_next("web_search", count=2)
+    trace = DeepAgent(registry=registry, memory=memory).run("research EV pricing")
+    print("Run 1 plan:")
+    for s in trace.plan.steps:
+        print(f"  {s.id} {s.tool:<16} {s.description}")
+    print("Replan log:")
+    for e in trace.plan.replan_log:
+        print(f"  {e['step_id']} {e['strategy']}: {e['reason']}")
+    print("Outcome:", trace.outcome, "| degraded:", trace.plan.degraded)
+    print("Lessons recorded:", trace.episode.lessons)
+
+    trace2 = DeepAgent(memory=memory).run("research EV pricing trends")
+    print("Run 2 memory hits:")
+    for h in trace2.memory_hits:
+        print("  ", h)
+    print("Run 2 replans:", len(trace2.plan.replan_log), "| outcome:", trace2.outcome)
+
+    registry3 = ToolRegistry()
+    registry3.fail_next("web_search", count=5)
+    registry3.fail_next("fallback_search", count=5)
+    trace3 = DeepAgent(registry=registry3).run("research EV pricing")
+    print("Run 3 (both search tools down):", trace3.outcome)
+    for e in trace3.plan.replan_log:
+        print(f"  {e['step_id']} {e['strategy']}")
 ```
+
+Output of `python examples/demo.py` (real run, re-checked in CI):
+
+<!-- run: python examples/demo.py -->
+```text
+Run 1 plan:
+  s1 fallback_search  Search the web for EV pricing
+  s2 summarizer       Distill key facts about EV pricing
+  s3 web_search       Search for alternatives to EV pricing
+  s4 summarizer       Compare and recommend on EV pricing
+Replan log:
+  s1 retry_modified: step s1 failed on first attempt (injected failure in web_search); retrying web_search with simplified args
+  s1 substitute_tool: step s1: web_search failed twice (injected failure in web_search); substituting fallback_search
+Outcome: success | degraded: True
+Lessons recorded: ['retry with simplified args often recovers a failed s1', "prefer fallback_search over web_search for 'research EV pricing'"]
+Run 2 memory hits:
+   step s1: memory lesson applied — fallback_search instead of web_search
+   step s3: memory lesson applied — fallback_search instead of web_search
+Run 2 replans: 0 | outcome: success
+Run 3 (both search tools down): failed
+  s1 retry_modified
+  s1 substitute_tool
+  s1 abort
+```
+<!-- /run -->
+
+## How to run
+
+```bash
+git clone https://github.com/jagadishmazure-jpg/Jagadish-deep-agents.git
+cd Jagadish-deep-agents
+python -m pip install pytest      # no runtime dependencies
+python -m pytest -q          # offline, no keys
+python examples/demo.py
+python scripts/render_docs.py --check   # documented output still matches
+```
+
+Test suite size (real collection, re-checked in CI):
+
+<!-- run: python scripts/count_tests.py -->
+```text
+27 tests collected
+```
+<!-- /run -->
+
+## Guardrails
+
+- The plan exists as data before any tool runs, so it can be inspected or approved.
+- Replanning is bounded by a budget; no unbounded retry loops.
+- Skipping a step marks the plan degraded instead of hiding it.
+- Every recovery decision is logged with its reason.
+
+## Limitations
+
+- Planner is rule templates, not an LLM; it handles a small set of goal shapes.
+- Tools are fakes; failure is injected.
+- Memory recall is keyword overlap, and lessons are parsed from fixed sentence patterns.
+- Memory lessons are never expired, so a stale lesson keeps applying.
+
+## Built vs planned
+
+| Capability | Status | Where |
+|---|---|---|
+| Plan model and rule-based decomposition | Built | `deepagents/planning.py` |
+| Executor and tool registry with failure injection | Built | `deepagents/execute.py` |
+| Four replanning strategies, bounded | Built | `deepagents/replan.py` |
+| Episodic memory (JSONL) | Built | `deepagents/memory.py` |
+| LLM planner, real tools over MCP, vector recall | Planned | docs/implementation-guide.md |
+| Human approval before abort on high-stakes goals | Planned | not started |
+
+## Implementation guide
+
+The step-by-step path from this offline build to an Azure deployment is in
+[docs/implementation-guide.md](docs/implementation-guide.md). None of it has been
+run; it is a plan.
+
+## Related repositories
+
+| Repo | How it relates |
+|---|---|
+| [Jagadish-multi-agent-orchestration](https://github.com/jagadishmazure-jpg/Jagadish-multi-agent-orchestration) | Coordinating several agents rather than one deep one |
+| [Jagadish-langchain-langgraph-langsmith](https://github.com/jagadishmazure-jpg/Jagadish-langchain-langgraph-langsmith) | Plan-and-execute in a graph framework |
+| [Jagadish-agentic-ai](https://github.com/jagadishmazure-jpg/Jagadish-agentic-ai) | Broader agent patterns |
+| [Jagadish-llm-evals-observability](https://github.com/jagadishmazure-jpg/Jagadish-llm-evals-observability) | Tracing and evaluating agent runs |
+
+## Documentation
+
+- [Memory design](docs/memory-design.md)
+- [Concepts](knowledge/01-concepts.md)
+- [Diagrams](knowledge/02-architecture.md)
+- [Implementation guide (Azure)](docs/implementation-guide.md)
+- [Interview points](docs/interview-points.md)
+- [Security policy](SECURITY.md)
 
 ## Project layout
 
-| Path | What |
-|---|---|
-| `deepagents/planning.py` | `Plan`/`Step` data model; rule-based `decompose()` |
-| `deepagents/execute.py` | `PlanExecutor`, `ToolRegistry`, deterministic fake tools |
-| `deepagents/replan.py` | Mid-run recovery strategies, bounded replan budget |
-| `deepagents/memory.py` | `EpisodicMemory`: JSONL episodes, recall, distill |
-| `deepagents/agent.py` | `DeepAgent`: memory → plan → execute → record |
-| `docs/memory-design.md` | Episodic vs semantic vs procedural memory |
+```
+deepagents/
+  planning.py  Plan/Step model, decompose()
+  execute.py   PlanExecutor, ToolRegistry, fake tools
+  replan.py    recovery strategies, budget
+  memory.py    EpisodicMemory (JSONL)
+  agent.py     DeepAgent: memory, plan, execute, record
+examples/demo.py  the run shown above
+tests/       offline pytest suite
+```
 
-## Production path
+## License
 
-- **Tools:** swap the fake registry for real tools via MCP servers;
-  the `ToolRegistry.call(name, args)` contract is unchanged.
-- **Memory:** replace keyword-overlap `recall()` with vector
-  similarity over episode embeddings (interface-compatible).
-- **Planner:** replace rule templates with an LLM decomposer; keep
-  plans as inspectable data — never execute an uninspectable plan.
-- **Replanning:** add cost/latency-aware strategy choice and
-  human-in-the-loop before `abort` on high-stakes goals.
-
-> Synthetic demo data only. No network calls, no API keys.
-
-## Knowledge
-
-Distilled notes and architecture diagrams: [knowledge/](knowledge/README.md)
+MIT, see [LICENSE](LICENSE). All data is synthetic; every organisation and person is fictional.

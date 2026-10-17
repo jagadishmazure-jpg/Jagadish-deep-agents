@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .planning import (
-    FAILED, PENDING, RUNNING, SKIPPED, SUCCEEDED, Plan, Step,
+    FAILED,
+    RUNNING,
+    SKIPPED,
+    SUCCEEDED,
+    Plan,
+    Step,
 )
 from .replan import ReplanEvent, replan
 

@@ -1,14 +1,23 @@
 """Tests for the deepagents package — all deterministic, no network/keys."""
 
-import json
 
 import pytest
 
 from deepagents import (
-    ABORT, RETRY_MODIFIED, SKIP, SUBSTITUTE_TOOL,
-    DeepAgent, EpisodicMemory, Plan, PlanExecutor, Step, ToolRegistry,
-    decompose, extract_subject,
+    ABORT,
+    RETRY_MODIFIED,
+    SKIP,
+    SUBSTITUTE_TOOL,
+    DeepAgent,
+    EpisodicMemory,
+    Plan,
+    PlanExecutor,
+    Step,
+    ToolRegistry,
+    decompose,
+    extract_subject,
 )
+from deepagents.execute import ToolError
 from deepagents.planning import SUCCEEDED
 
 ALL_TOOLS = {"web_search", "fallback_search", "calculator", "summarizer"}
@@ -127,7 +136,6 @@ def test_persistent_failure_substitutes_alternative_tool():
 def test_non_critical_step_skips_and_plan_continues_degraded(monkeypatch):
     import sys
     replan_mod = sys.modules["deepagents.replan"]  # module, not the replan fn
-    from deepagents.execute import ToolError
 
     def always_fail(**kwargs):
         raise ToolError("always fails")
@@ -313,5 +321,5 @@ def test_agent_trace_carries_full_record():
 
 def test_calculator_rejects_non_arithmetic():
     registry = make_registry()
-    with pytest.raises(Exception):
+    with pytest.raises(ToolError):
         registry.call("calculator", {"expression": "__import__('os').system('x')"})

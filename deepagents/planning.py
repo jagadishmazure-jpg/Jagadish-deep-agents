@@ -153,7 +153,8 @@ def decompose(goal: str, available_tools: Set[str] | List[str]) -> Plan:
         surviving_positions = sorted(pos for pos, _ in raw_steps)
         old_to_new = {pos: f"s{i}" for i, pos in enumerate(surviving_positions, start=1)}
 
-        def rewire(old_ref: str, current_pos: int) -> str:
+        def rewire(old_ref: str, current_pos: int, old_to_new=old_to_new,
+                   surviving_positions=surviving_positions) -> str:
             if old_ref in old_to_new:
                 return old_to_new[old_ref]
             earlier = [p for p in surviving_positions if p < current_pos]

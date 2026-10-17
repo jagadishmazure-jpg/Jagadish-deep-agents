@@ -14,7 +14,7 @@ plan's replan log. Replanning is bounded by ``max_replans``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:  # avoid a runtime import cycle with execute.py

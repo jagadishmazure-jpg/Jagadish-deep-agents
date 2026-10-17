@@ -7,3 +7,5 @@ venv/
 dist/
 build/
 memory.jsonl
+.ruff_cache/
+*.pdf
