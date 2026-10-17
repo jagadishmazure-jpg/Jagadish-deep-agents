@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagents"
+version = "0.1.0"
+description = "Deep agent patterns: plan-and-execute with mid-run replanning and episodic memory"
+requires-python = ">=3.10"
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents"]
